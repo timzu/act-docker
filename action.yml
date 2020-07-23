@@ -1,0 +1,15 @@
+name: "Action Docker Push"
+description: "build, tag and push container"
+author: "Timur Galeev <timur_galeev@outlook.com>"
+
+branding:
+  icon: "anchor"
+  color: "blue"
+
+runs:
+  using: docker
+  image: docker://timurgaleev/act-docker:v0.1.0
+
+outputs:
+  TAG_NAME:
+    description: "Your Docker Tag name."
