@@ -1,4 +1,4 @@
-FROM timurgaleev/build-image
+FROM timzu/build-image
 
 LABEL "com.github.actions.name"="Action Docker Push"
 LABEL "com.github.actions.description"="build, tag and push container"

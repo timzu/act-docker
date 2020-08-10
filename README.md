@@ -17,7 +17,7 @@ jobs:
           fetch-depth: 1
 
       - name: Docker Build & Push to Docker Hub
-        uses: timurgaleev/act-docker@master
+        uses: timzu/act-docker@master
         with:
           args: --docker
         env:
@@ -29,7 +29,7 @@ jobs:
           LATEST: "true"
 
       - name: Docker Build & Push to GitHub Package
-        uses: timurgaleev/act-docker@master
+        uses: timzu/act-docker@master
         with:
           args: --docker
         env:
@@ -42,7 +42,7 @@ jobs:
           LATEST: "true"
 
       - name: Docker Build & Push to AWS ECR
-        uses: timurgaleev/act-docker@master
+        uses: timzu/act-docker@master
         with:
           args: --ecr
         env:
