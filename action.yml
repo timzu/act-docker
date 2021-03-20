@@ -8,8 +8,8 @@ branding:
 
 runs:
   using: docker
-  image: docker://timzu/act-docker:v0.2.4
+  image: docker://timzu/act-docker:v0.3.1
 
 outputs:
   TAG_NAME:
-    description: "Your Docker Tag name."
+    description: "Docker Tag"
