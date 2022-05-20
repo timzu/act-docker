@@ -5,7 +5,7 @@ LABEL "com.github.actions.description"="build, tag and push container"
 LABEL "com.github.actions.icon"="anchor"
 LABEL "com.github.actions.color"="blue"
 
-LABEL version=v0.3.4
+LABEL version=v0.3.5
 LABEL repository="https://github.com/timzu/github-actions-docker"
 LABEL maintainer="Timur Galeev <timur_galeev@outlook.com>"
 
