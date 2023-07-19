@@ -7,7 +7,7 @@ REPOSITORY=${GITHUB_REPOSITORY}
 USERNAME=${USERNAME:-$GITHUB_ACTOR}
 REPONAME=$(echo "${REPOSITORY}" | cut -d'/' -f2)
 
-command -v tput > /dev/null && TPUT=true
+command -v tput >/dev/null && TPUT=true
 
 _echo() {
   if [ "${TPUT}" != "" ] && [ "$2" != "" ]; then
@@ -36,7 +36,6 @@ _success() {
 _error() {
   echo
   _echo "- $@" 1
-
   if [ "${LOOSE_ERROR}" == "true" ]; then
     exit 0
   else
@@ -62,7 +61,7 @@ _aws_pre() {
   fi
 
   if [ -z "${AWS_REGION}" ]; then
-    AWS_REGION="eu-central-1"
+    AWS_REGION="us-east-1"
   fi
 }
 
@@ -89,7 +88,20 @@ _docker_tag() {
   fi
 }
 
-_docker_push() {
+_docker_file() {
+  if [ -z "${DOCKERFILE}" ]; then
+    DOCKERFILE="Dockerfile"
+    if [ ! -f ${DOCKERFILE} ]; then
+      if [ ! -z "${BASE_IMAGE}" ]; then
+        echo "FROM ${BASE_IMAGE}:${TAG_NAME}" >${DOCKERFILE}
+      else
+        _error "${DOCKERFILE} not found."
+      fi
+    fi
+  fi
+}
+
+_docker_build() {
   _command "docker build ${DOCKER_BUILD_ARGS} -t ${IMAGE_URI}:${TAG_NAME} -f ${DOCKERFILE} ${BUILD_PATH}"
   docker build ${DOCKER_BUILD_ARGS} -t ${IMAGE_URI}:${TAG_NAME} -f ${DOCKERFILE} ${BUILD_PATH}
 
@@ -109,7 +121,42 @@ _docker_push() {
   fi
 }
 
+_docker_manifest() {
+  _command "docker manifest create ${@}"
+  docker manifest create ${@}
+
+  _error_check
+
+  _command "docker manifest inspect ${1}"
+  docker manifest inspect ${1}
+
+  _command "docker manifest push ${1}"
+  docker manifest push ${1}
+}
+
+_docker_buildx() {
+  if [ -z "${PLATFORM}" ]; then
+    PLATFORM="linux/arm64,linux/amd64"
+  fi
+
+  PLACE=$(date +%s)
+
+  _command "docker buildx create --use --name ops-${PLACE}"
+  docker buildx create --use --name ops-${PLACE}
+
+  _command "docker buildx build ${DOCKER_BUILD_ARGS} -t ${IMAGE_URI}:${TAG_NAME} -f ${DOCKERFILE} ${BUILD_PATH}"
+  docker buildx build --push ${DOCKER_BUILD_ARGS} -t ${IMAGE_URI}:${TAG_NAME} -f ${DOCKERFILE} ${BUILD_PATH} --platform ${PLATFORM}
+
+  _error_check
+
+  _command "docker buildx imagetools inspect ${IMAGE_URI}:${TAG_NAME}"
+  docker buildx imagetools inspect ${IMAGE_URI}:${TAG_NAME}
+
+}
+
 _docker_pre() {
+  _docker_tag
+
   if [ -z "${USERNAME}" ]; then
     _error "USERNAME is not set."
   fi
@@ -122,21 +169,26 @@ _docker_pre() {
     BUILD_PATH="."
   fi
 
-  if [ -z "${DOCKERFILE}" ]; then
-    DOCKERFILE="Dockerfile"
+  _docker_file
+
+  if [ -z "${IMAGE_NAME}" ]; then
+    if [ "${REGISTRY}" == "docker.pkg.github.com" ]; then
+      IMAGE_NAME="${REPONAME}"
+    else
+      IMAGE_NAME="${REPOSITORY}"
+    fi
   fi
 
   if [ -z "${IMAGE_URI}" ]; then
     if [ -z "${REGISTRY}" ]; then
-      IMAGE_URI="${IMAGE_NAME:-${REPOSITORY}}"
+      IMAGE_URI="${IMAGE_NAME}"
     elif [ "${REGISTRY}" == "docker.pkg.github.com" ]; then
-      IMAGE_URI="${REGISTRY}/${REPOSITORY}/${IMAGE_NAME:-${REPONAME}}"
+      # :owner/:repo_name/:image_name
+      IMAGE_URI="${REGISTRY}/${REPOSITORY}/${IMAGE_NAME}"
     else
-      IMAGE_URI="${REGISTRY}/${IMAGE_NAME:-${REPOSITORY}}"
+      IMAGE_URI="${REGISTRY}/${IMAGE_NAME}"
     fi
   fi
-
-  _docker_tag
 }
 
 _docker() {
@@ -147,7 +199,11 @@ _docker() {
 
   _error_check
 
-  _docker_push
+  if [ "${BUILDX}" == "true" ]; then
+    _docker_buildx
+  else
+    _docker_build
+  fi
 
   _command "docker logout"
   docker logout
@@ -156,27 +212,35 @@ _docker() {
 _docker_ecr_pre() {
   _aws_pre
 
+  _docker_tag
+
   if [ -z "${AWS_ACCOUNT_ID}" ]; then
-    AWS_ACCOUNT_ID="$(aws sts get-caller-identity | grep "Account" | cut -d'"' -f4)"
+    AWS_ACCOUNT_ID="$(aws sts get-caller-identity --output json | jq '.Account' -r)"
   fi
 
   if [ -z "${BUILD_PATH}" ]; then
     BUILD_PATH="."
   fi
 
-  if [ -z "${DOCKERFILE}" ]; then
-    DOCKERFILE="Dockerfile"
+  _docker_file
+
+  if [ -z "${REGISTRY}" ]; then
+    REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
   fi
 
+  PUBLIC=$(echo ${REGISTRY} | cut -d'.' -f1)
+
   if [ -z "${IMAGE_NAME}" ]; then
-    IMAGE_NAME="${REPOSITORY}"
+    if [ "${PUBLIC}" == "public" ]; then
+      IMAGE_NAME="${REPONAME}"
+    else
+      IMAGE_NAME="${REPOSITORY}"
+    fi
   fi
 
   if [ -z "${IMAGE_URI}" ]; then
-    IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${IMAGE_NAME}"
+    IMAGE_URI="${REGISTRY}/${IMAGE_NAME}"
   fi
-
-  _docker_tag
 
   if [ "${IMAGE_TAG_MUTABILITY}" != "IMMUTABLE" ]; then
     IMAGE_TAG_MUTABILITY="MUTABLE"
@@ -187,29 +251,42 @@ _docker_ecr() {
   _docker_ecr_pre
 
   # aws credentials
-  aws configure <<-EOF > /dev/null 2>&1
+  aws configure <<-EOF >/dev/null 2>&1
 ${AWS_ACCESS_KEY_ID}
 ${AWS_SECRET_ACCESS_KEY}
 ${AWS_REGION}
 text
 EOF
 
-  # https://docs.aws.amazon.com/cli/latest/reference/ecr/get-login.html
-  # _command "aws ecr get-login --no-include-email"
-  # aws ecr get-login --no-include-email | sh
-
-  _command "aws ecr get-login-password ${AWS_ACCOUNT_ID} ${AWS_REGION}"
-  aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/
+  if [ "${PUBLIC}" == "public" ]; then
+    _command "aws ecr-public get-login-password --region us-east-1 ${REGISTRY}"
+    aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${REGISTRY}
+  else
+    _command "aws ecr get-login-password --region ${AWS_REGION} ${REGISTRY}"
+    aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${REGISTRY}
+  fi
 
   _error_check
 
-  COUNT=$(aws ecr describe-repositories | jq '.repositories[] | .repositoryName' | grep "\"${IMAGE_NAME}\"" | wc -l | xargs)
-  if [ "x${COUNT}" == "x0" ]; then
-    _command "aws ecr create-repository ${IMAGE_NAME}"
-    aws ecr create-repository --repository-name ${IMAGE_NAME} --image-tag-mutability ${IMAGE_TAG_MUTABILITY}
+  if [ "${PUBLIC}" == "public" ]; then
+    COUNT=$(aws ecr-public describe-repositories --region us-east-1 --output json | jq '.repositories[] | .repositoryName' | grep "\"${IMAGE_NAME}\"" | wc -l | xargs)
+    if [ "x${COUNT}" == "x0" ]; then
+      _command "aws ecr-public create-repository ${IMAGE_NAME}"
+      aws ecr-public create-repository --repository-name ${IMAGE_NAME} --region us-east-1
+    fi
+  else
+    COUNT=$(aws ecr describe-repositories --output json | jq '.repositories[] | .repositoryName' | grep "\"${IMAGE_NAME}\"" | wc -l | xargs)
+    if [ "x${COUNT}" == "x0" ]; then
+      _command "aws ecr create-repository ${IMAGE_NAME}"
+      aws ecr create-repository --repository-name ${IMAGE_NAME} --image-tag-mutability ${IMAGE_TAG_MUTABILITY}
+    fi
   fi
 
-  _docker_push
+  if [ "${BUILDX}" == "true" ]; then
+    _docker_buildx
+  else
+    _docker_build
+  fi
 }
 
 if [ -z "${CMD}" ]; then
@@ -219,14 +296,15 @@ fi
 _result "[${CMD:2}] start..."
 
 case "${CMD:2}" in
-  docker)
-    _docker
-    ;;
-  ecr)
-    _docker_ecr
-    ;;
-  *)
-    _error
+docker)
+  _docker
+  ;;
+ecr)
+  _docker_ecr
+  ;;
+*)
+  _error
+  ;;
 esac
 
 echo ::set-output name=TAG_NAME::${TAG_NAME}
